@@ -72,13 +72,18 @@ class CacheManager implements BaseCacheManager {
     String url, {
     String? key,
     Map<String, String>? headers,
+    CancellationToken? cancellationToken,
   }) async {
     key ??= url;
     final cacheFile = await getFileFromCache(key);
     if (cacheFile != null && cacheFile.validTill.isAfter(DateTime.now())) {
       return cacheFile.file;
     }
-    return (await downloadFile(url, key: key, authHeaders: headers)).file;
+    return (await downloadFile(url,
+            key: key,
+            authHeaders: headers,
+            cancellationToken: cancellationToken))
+        .file;
   }
 
   /// Get the file from the cache and/or online, depending on availability and age.
@@ -88,11 +93,14 @@ class CacheManager implements BaseCacheManager {
   @override
   @Deprecated('Prefer to use the new getFileStream method')
   Stream<FileInfo> getFile(String url,
-      {String? key, Map<String, String>? headers}) {
+      {String? key,
+      Map<String, String>? headers,
+      CancellationToken? cancellationToken}) {
     return getFileStream(
       url,
       key: key,
       withProgress: false,
+      cancellationToken: cancellationToken,
     ).where((r) => r is FileInfo).cast<FileInfo>();
   }
 
@@ -109,10 +117,14 @@ class CacheManager implements BaseCacheManager {
   /// might be outdated and a new file is being downloaded in the background.
   @override
   Stream<FileResponse> getFileStream(String url,
-      {String? key, Map<String, String>? headers, bool withProgress = false}) {
+      {String? key,
+      Map<String, String>? headers,
+      bool withProgress = false,
+      CancellationToken? cancellationToken}) {
     key ??= url;
     final streamController = StreamController<FileResponse>();
-    _pushFileToStream(streamController, url, key, headers, withProgress);
+    _pushFileToStream(
+        streamController, url, key, headers, withProgress, cancellationToken);
     return streamController.stream;
   }
 
@@ -122,6 +134,7 @@ class CacheManager implements BaseCacheManager {
     String? key,
     Map<String, String>? headers,
     bool withProgress,
+    CancellationToken? cancellationToken,
   ) async {
     key ??= url;
     FileInfo? cacheFile;
@@ -138,8 +151,10 @@ class CacheManager implements BaseCacheManager {
     }
     if (cacheFile == null || cacheFile.validTill.isBefore(DateTime.now())) {
       try {
-        await for (final response
-            in _webHelper.downloadFile(url, key: key, authHeaders: headers)) {
+        await for (final response in _webHelper.downloadFile(url,
+            key: key,
+            authHeaders: headers,
+            cancellationToken: cancellationToken)) {
           if (response is DownloadProgress && withProgress) {
             streamController.add(response);
           }
@@ -173,7 +188,8 @@ class CacheManager implements BaseCacheManager {
   Future<FileInfo> downloadFile(String url,
       {String? key,
       Map<String, String>? authHeaders,
-      bool force = false}) async {
+      bool force = false,
+      CancellationToken? cancellationToken}) async {
     key ??= url;
     final fileResponse = await _webHelper
         .downloadFile(
@@ -181,6 +197,7 @@ class CacheManager implements BaseCacheManager {
           key: key,
           authHeaders: authHeaders,
           ignoreMemCache: force,
+          cancellationToken: cancellationToken,
         )
         .firstWhere((r) => r is FileInfo);
     return fileResponse as FileInfo;

@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:file/file.dart';
 import 'package:flutter_cache_manager/src/result/file_info.dart';
 import 'package:flutter_cache_manager/src/result/file_response.dart';
+import 'package:flutter_cache_manager/src/web/file_service.dart';
 
 /// Interface of the CacheManager. In general [CacheManager] can be used
 /// directly.
@@ -14,8 +15,9 @@ abstract class BaseCacheManager {
   /// newly downloaded file is returned.
   Future<File> getSingleFile(
     String url, {
-    String key,
-    Map<String, String> headers,
+    String? key,
+    Map<String, String>? headers,
+    CancellationToken? cancellationToken,
   });
 
   /// Get the file from the cache and/or online, depending on availability and age.
@@ -24,7 +26,7 @@ abstract class BaseCacheManager {
   /// cached file is too old the newly downloaded file is returned afterwards.
   @Deprecated('Prefer to use the new getFileStream method')
   Stream<FileInfo> getFile(String url,
-      {String key, Map<String, String> headers});
+      {String? key, Map<String, String>? headers, CancellationToken? cancellationToken});
 
   /// Get the file from the cache and/or online, depending on availability and age.
   /// Downloaded form [url], [headers] can be used for example for authentication.
@@ -38,11 +40,11 @@ abstract class BaseCacheManager {
   /// returned from the cache there will be no progress given, although the file
   /// might be outdated and a new file is being downloaded in the background.
   Stream<FileResponse> getFileStream(String url,
-      {String? key, Map<String, String>? headers, bool withProgress});
+      {String? key, Map<String, String>? headers, bool withProgress = false, CancellationToken? cancellationToken});
 
   ///Download the file and add to cache
   Future<FileInfo> downloadFile(String url,
-      {String? key, Map<String, String>? authHeaders, bool force = false});
+      {String? key, Map<String, String>? authHeaders, bool force = false, CancellationToken? cancellationToken});
 
   /// Get the file from the cache.
   /// Specify [ignoreMemCache] to force a re-read from the database
