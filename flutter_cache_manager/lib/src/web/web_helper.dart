@@ -52,6 +52,17 @@ class WebHelper {
     Map<String, String>? authHeaders,
     CancellationToken? cancellationToken,
   ) async {
+    // Check if already cancelled before starting
+    if (cancellationToken?.isCancelled ?? false) {
+      final subject = _memCache[key];
+      if (subject != null) {
+        subject.addError(CancelledException());
+        await subject.close();
+        _memCache.remove(key);
+      }
+      return;
+    }
+
     //Add to queue if there are too many calls.
     if (concurrentCalls >= fileFetcher.concurrentFetches) {
       _queue.add(QueueItem(url, key, authHeaders, cancellationToken));
@@ -63,8 +74,8 @@ class WebHelper {
     concurrentCalls++;
     final subject = _memCache[key]!;
     try {
-      await for (final result
-          in _updateFile(url, key, authHeaders: authHeaders, cancellationToken: cancellationToken)) {
+      await for (final result in _updateFile(url, key,
+          authHeaders: authHeaders, cancellationToken: cancellationToken)) {
         subject.add(result);
       }
     } on Object catch (e, stackTrace) {
@@ -80,12 +91,27 @@ class WebHelper {
   void _checkQueue() {
     if (_queue.isEmpty) return;
     final next = _queue.removeFirst();
-    _downloadOrAddToQueue(next.url, next.key, next.headers, next.cancellationToken);
+    // Skip cancelled items
+    if (next.cancellationToken?.isCancelled ?? false) {
+      // Clean up the subject for this cancelled request
+      final subject = _memCache[next.key];
+      if (subject != null) {
+        subject.addError(CancelledException());
+        subject.close();
+        _memCache.remove(next.key);
+      }
+      // Check the next item in queue
+      _checkQueue();
+      return;
+    }
+    _downloadOrAddToQueue(
+        next.url, next.key, next.headers, next.cancellationToken);
   }
 
   ///Download the file from the url
   Stream<FileResponse> _updateFile(String url, String key,
-      {Map<String, String>? authHeaders, CancellationToken? cancellationToken}) async* {
+      {Map<String, String>? authHeaders,
+      CancellationToken? cancellationToken}) async* {
     var cacheObject = await _store.retrieveCacheData(key);
     cacheObject = cacheObject == null
         ? CacheObject(
@@ -95,12 +121,13 @@ class WebHelper {
             relativePath: '${const Uuid().v1()}.file',
           )
         : cacheObject.copyWith(url: url);
-    final response = await _download(cacheObject, authHeaders, cancellationToken);
+    final response =
+        await _download(cacheObject, authHeaders, cancellationToken);
     yield* _manageResponse(cacheObject, response);
   }
 
-  Future<FileServiceResponse> _download(
-      CacheObject cacheObject, Map<String, String>? authHeaders, CancellationToken? cancellationToken) {
+  Future<FileServiceResponse> _download(CacheObject cacheObject,
+      Map<String, String>? authHeaders, CancellationToken? cancellationToken) {
     final headers = <String, String>{};
 
     final etag = cacheObject.eTag;
@@ -114,7 +141,8 @@ class WebHelper {
       headers.addAll(authHeaders);
     }
 
-    return fileFetcher.get(cacheObject.url, headers: headers, cancellationToken: cancellationToken);
+    return fileFetcher.get(cacheObject.url,
+        headers: headers, cancellationToken: cancellationToken);
   }
 
   Stream<FileResponse> _manageResponse(
