@@ -112,7 +112,18 @@ class WebHelper {
   Stream<FileResponse> _updateFile(String url, String key,
       {Map<String, String>? authHeaders,
       CancellationToken? cancellationToken}) async* {
+    // Check cancellation before any work
+    if (cancellationToken?.isCancelled ?? false) {
+      throw CancelledException();
+    }
+
     var cacheObject = await _store.retrieveCacheData(key);
+
+    // Check cancellation after async work
+    if (cancellationToken?.isCancelled ?? false) {
+      throw CancelledException();
+    }
+
     cacheObject = cacheObject == null
         ? CacheObject(
             url,
@@ -123,7 +134,13 @@ class WebHelper {
         : cacheObject.copyWith(url: url);
     final response =
         await _download(cacheObject, authHeaders, cancellationToken);
-    yield* _manageResponse(cacheObject, response);
+
+    // Check cancellation after download
+    if (cancellationToken?.isCancelled ?? false) {
+      throw CancelledException();
+    }
+
+    yield* _manageResponse(cacheObject, response, cancellationToken);
   }
 
   Future<FileServiceResponse> _download(CacheObject cacheObject,
@@ -146,7 +163,14 @@ class WebHelper {
   }
 
   Stream<FileResponse> _manageResponse(
-      CacheObject cacheObject, FileServiceResponse response) async* {
+      CacheObject cacheObject,
+      FileServiceResponse response,
+      CancellationToken? cancellationToken) async* {
+    // Check cancellation at start
+    if (cancellationToken?.isCancelled ?? false) {
+      throw CancelledException();
+    }
+
     final hasNewFile = statusCodesNewFile.contains(response.statusCode);
     final keepOldFile = statusCodesFileNotChanged.contains(response.statusCode);
     if (!hasNewFile && !keepOldFile) {
@@ -161,12 +185,22 @@ class WebHelper {
     var newCacheObject = _setDataFromHeaders(cacheObject, response);
     if (statusCodesNewFile.contains(response.statusCode)) {
       var savedBytes = 0;
-      await for (final progress in _saveFile(newCacheObject, response)) {
+      await for (final progress
+          in _saveFile(newCacheObject, response, cancellationToken)) {
+        // Check cancellation during file save
+        if (cancellationToken?.isCancelled ?? false) {
+          throw CancelledException();
+        }
         savedBytes = progress;
         yield DownloadProgress(
             cacheObject.url, response.contentLength, progress);
       }
       newCacheObject = newCacheObject.copyWith(length: savedBytes);
+    }
+
+    // Check cancellation before storing
+    if (cancellationToken?.isCancelled ?? false) {
+      throw CancelledException();
     }
 
     _store.putFile(newCacheObject).then((_) {
@@ -207,12 +241,14 @@ class WebHelper {
     );
   }
 
-  Stream<int> _saveFile(CacheObject cacheObject, FileServiceResponse response) {
+  Stream<int> _saveFile(CacheObject cacheObject, FileServiceResponse response,
+      CancellationToken? cancellationToken) {
     final receivedBytesResultController = StreamController<int>();
     _saveFileAndPostUpdates(
       receivedBytesResultController,
       cacheObject,
       response,
+      cancellationToken,
     );
     return receivedBytesResultController.stream;
   }
@@ -220,17 +256,26 @@ class WebHelper {
   Future<void> _saveFileAndPostUpdates(
       StreamController<int> receivedBytesResultController,
       CacheObject cacheObject,
-      FileServiceResponse response) async {
+      FileServiceResponse response,
+      CancellationToken? cancellationToken) async {
     final file = await _store.fileSystem.createFile(cacheObject.relativePath);
 
     try {
       var receivedBytes = 0;
       final sink = file.openWrite();
-      await response.content.map((s) {
-        receivedBytes += s.length;
+      await for (final chunk in response.content) {
+        // Check cancellation while receiving data
+        if (cancellationToken?.isCancelled ?? false) {
+          await sink.close();
+          receivedBytesResultController.addError(CancelledException());
+          await receivedBytesResultController.close();
+          return;
+        }
+        receivedBytes += chunk.length;
         receivedBytesResultController.add(receivedBytes);
-        return s;
-      }).pipe(sink);
+        sink.add(chunk);
+      }
+      await sink.close();
     } on Object catch (e, stacktrace) {
       receivedBytesResultController.addError(e, stacktrace);
     }
