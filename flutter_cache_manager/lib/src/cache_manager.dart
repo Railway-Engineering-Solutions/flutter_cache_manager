@@ -117,7 +117,7 @@ class CacheManager implements BaseCacheManager {
   }
 
   Future<void> _pushFileToStream(
-    StreamController<dynamic> streamController,
+    StreamController<FileResponse> streamController,
     String url,
     String? key,
     Map<String, String>? headers,
@@ -136,18 +136,49 @@ class CacheManager implements BaseCacheManager {
           'CacheManager: Failed to load cached file for $url with error:\n$e',
           CacheManagerLogLevel.debug);
     }
+
+    if (streamController.isClosed || !streamController.hasListener) return;
+
     if (cacheFile == null || cacheFile.validTill.isBefore(DateTime.now())) {
+      StreamSubscription? webSubscription;
+      streamController.onCancel = () {
+        webSubscription?.cancel();
+      };
+
       try {
-        await for (final response
-            in _webHelper.downloadFile(url, key: key, authHeaders: headers)) {
-          if (response is DownloadProgress && withProgress) {
-            streamController.add(response);
-          }
-          if (response is FileInfo) {
-            streamController.add(response);
-          }
-        }
-      } on Object catch (e) {
+        final webStream =
+            _webHelper.downloadFile(url, key: key, authHeaders: headers);
+        webSubscription = webStream.listen(
+          (response) {
+            if (response is DownloadProgress && withProgress) {
+              streamController.add(response);
+            }
+            if (response is FileInfo) {
+              streamController.add(response);
+            }
+          },
+          onError: (e) {
+            cacheLogger.log(
+                'CacheManager: Failed to download file from $url with error:\n$e',
+                CacheManagerLogLevel.debug);
+            if (cacheFile == null && streamController.hasListener) {
+              streamController.addError(e);
+            }
+
+            if (cacheFile != null &&
+                e is HttpExceptionWithStatus &&
+                e.statusCode == 404) {
+              if (streamController.hasListener) {
+                streamController.addError(e);
+              }
+              removeFile(key!);
+            }
+          },
+          onDone: () {
+            streamController.close();
+          },
+        );
+      } catch (e) {
         cacheLogger.log(
             'CacheManager: Failed to download file from $url with error:\n$e',
             CacheManagerLogLevel.debug);
@@ -161,11 +192,12 @@ class CacheManager implements BaseCacheManager {
           if (streamController.hasListener) {
             streamController.addError(e);
           }
-          await removeFile(key);
+          removeFile(key);
         }
       }
+    } else {
+      streamController.close();
     }
-    streamController.close();
   }
 
   ///Download the file and add to cache

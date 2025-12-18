@@ -3,6 +3,7 @@ import 'dart:collection';
 import 'dart:io';
 
 import 'package:clock/clock.dart';
+import 'package:dio/dio.dart' as dio;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:flutter_cache_manager/src/cache_store.dart';
@@ -36,9 +37,14 @@ class WebHelper {
     key ??= url;
     var subject = _memCache[key];
     if (subject == null || ignoreMemCache) {
-      subject = BehaviorSubject<FileResponse>();
+      final cancelToken = dio.CancelToken();
+      subject = BehaviorSubject<FileResponse>(
+        onCancel: () {
+          cancelToken.cancel();
+        },
+      );
       _memCache[key] = subject;
-      _downloadOrAddToQueue(url, key, authHeaders);
+      _downloadOrAddToQueue(url, key, authHeaders, cancelToken);
     }
     return subject.stream;
   }
@@ -49,10 +55,11 @@ class WebHelper {
     String url,
     String key,
     Map<String, String>? authHeaders,
+    dio.CancelToken cancelToken,
   ) async {
     //Add to queue if there are too many calls.
     if (concurrentCalls >= fileFetcher.concurrentFetches) {
-      _queue.add(QueueItem(url, key, authHeaders));
+      _queue.add(QueueItem(url, key, authHeaders, cancelToken: cancelToken));
       return;
     }
     cacheLogger.log(
@@ -61,8 +68,8 @@ class WebHelper {
     concurrentCalls++;
     final subject = _memCache[key]!;
     try {
-      await for (final result
-          in _updateFile(url, key, authHeaders: authHeaders)) {
+      await for (final result in _updateFile(url, key,
+          authHeaders: authHeaders, cancelToken: cancelToken)) {
         subject.add(result);
       }
     } on Object catch (e, stackTrace) {
@@ -78,12 +85,17 @@ class WebHelper {
   void _checkQueue() {
     if (_queue.isEmpty) return;
     final next = _queue.removeFirst();
-    _downloadOrAddToQueue(next.url, next.key, next.headers);
+    if (next.cancelToken?.isCancelled ?? false) {
+      _checkQueue();
+      return;
+    }
+    _downloadOrAddToQueue(next.url, next.key, next.headers,
+        next.cancelToken ?? dio.CancelToken());
   }
 
   ///Download the file from the url
   Stream<FileResponse> _updateFile(String url, String key,
-      {Map<String, String>? authHeaders}) async* {
+      {Map<String, String>? authHeaders, dio.CancelToken? cancelToken}) async* {
     var cacheObject = await _store.retrieveCacheData(key);
     cacheObject = cacheObject == null
         ? CacheObject(
@@ -93,12 +105,14 @@ class WebHelper {
             relativePath: '${const Uuid().v1()}.file',
           )
         : cacheObject.copyWith(url: url);
-    final response = await _download(cacheObject, authHeaders);
+    final response =
+        await _download(cacheObject, authHeaders, cancelToken: cancelToken);
     yield* _manageResponse(cacheObject, response);
   }
 
   Future<FileServiceResponse> _download(
-      CacheObject cacheObject, Map<String, String>? authHeaders) {
+      CacheObject cacheObject, Map<String, String>? authHeaders,
+      {dio.CancelToken? cancelToken}) {
     final headers = <String, String>{};
 
     final etag = cacheObject.eTag;
@@ -112,7 +126,8 @@ class WebHelper {
       headers.addAll(authHeaders);
     }
 
-    return fileFetcher.get(cacheObject.url, headers: headers);
+    return fileFetcher.get(cacheObject.url,
+        headers: headers, cancelToken: cancelToken);
   }
 
   Stream<FileResponse> _manageResponse(

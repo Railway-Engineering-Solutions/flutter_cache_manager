@@ -13,7 +13,9 @@ class MockFileService extends MockFileServiceBase {
     var fileService = MockFileService._();
     if (includeStandardResponse) {
       when(fileService.concurrentFetches).thenReturn(2);
-      when(fileService.get(any, headers: anyNamed('headers')))
+      when(fileService.get(any,
+              headers: anyNamed('headers'),
+              cancelToken: anyNamed('cancelToken')))
           .thenAnswer((realInvocation) async {
         return TestResponse();
       });

@@ -484,7 +484,9 @@ void main() {
       var config = createTestConfig();
       var fileService = config.fileService;
       var downloadStreamController = StreamController<List<int>>();
-      when(fileService.get(fileUrl, headers: anyNamed('headers')))
+      when(fileService.get(fileUrl,
+              headers: anyNamed('headers'),
+              cancelToken: anyNamed('cancelToken')))
           .thenAnswer((_) {
         return Future.value(MockFileFetcherResponse(
             downloadStreamController.stream,
@@ -527,7 +529,9 @@ void main() {
       when(store.getFile(fileUrl)).thenAnswer((_) => Future.value(null));
 
       var downloadStreamController = StreamController<List<int>>();
-      when(config.fileService.get(fileUrl, headers: anyNamed('headers')))
+      when(config.fileService.get(fileUrl,
+              headers: anyNamed('headers'),
+              cancelToken: anyNamed('cancelToken')))
           .thenAnswer((_) {
         return Future.value(MockFileFetcherResponse(
             downloadStreamController.stream,

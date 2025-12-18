@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:clock/clock.dart';
+import 'package:dio/dio.dart' as dio;
 import 'package:flutter_cache_manager/src/web/mime_converter.dart';
 import 'package:http/http.dart' as http;
 
@@ -16,7 +17,8 @@ import 'package:http/http.dart' as http;
 abstract class FileService {
   int concurrentFetches = 10;
 
-  Future<FileServiceResponse> get(String url, {Map<String, String>? headers});
+  Future<FileServiceResponse> get(String url,
+      {Map<String, String>? headers, dio.CancelToken? cancelToken});
 }
 
 /// [HttpFileService] is the most common file service and the default for
@@ -29,7 +31,7 @@ class HttpFileService extends FileService {
 
   @override
   Future<FileServiceResponse> get(String url,
-      {Map<String, String>? headers}) async {
+      {Map<String, String>? headers, dio.CancelToken? cancelToken}) async {
     final req = http.Request('GET', Uri.parse(url));
     if (headers != null) {
       req.headers.addAll(headers);

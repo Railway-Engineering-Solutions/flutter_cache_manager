@@ -1,46 +1,60 @@
 import 'dart:io';
 
-import 'package:clock/clock.dart';
 import 'package:dio/dio.dart' as dio;
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:flutter_cache_manager/src/web/mime_converter.dart';
 
-class FileServiceCompat extends FileService {
-  final FileFetcher fileFetcher;
+class DioHttpFileService extends FileService {
+  final dio.Dio _dio;
 
-  FileServiceCompat(this.fileFetcher);
+  DioHttpFileService(dio.Dio dio) : _dio = dio;
 
   @override
   Future<FileServiceResponse> get(String url,
       {Map<String, String>? headers, dio.CancelToken? cancelToken}) async {
-    final legacyResponse = await fileFetcher(url, headers: headers);
-    return CompatFileServiceGetResponse(legacyResponse);
+    final options = dio.Options(
+      headers: headers,
+      responseType: dio.ResponseType.stream,
+    );
+
+    final response = await _dio.get<dio.ResponseBody>(
+      url,
+      cancelToken: cancelToken,
+      options: options,
+    );
+    return DioGetResponse(response);
   }
 }
 
-class CompatFileServiceGetResponse implements FileServiceResponse {
-  final FileFetcherResponse legacyResponse;
-  final DateTime _receivedTime = clock.now();
+class DioGetResponse implements FileServiceResponse {
+  final dio.Response<dio.ResponseBody> _response;
+  final DateTime _receivedTime = DateTime.now();
 
-  CompatFileServiceGetResponse(this.legacyResponse);
+  DioGetResponse(this._response);
+
+  @override
+  int get statusCode => _response.statusCode ?? 500;
 
   String? _header(String name) {
-    return legacyResponse.header(name);
+    return _response.headers.value(name);
   }
 
   @override
-  Stream<List<int>> get content => Stream.value(legacyResponse.bodyBytes);
+  Stream<List<int>> get content => _response.data!.stream;
 
   @override
-  int get contentLength => legacyResponse.bodyBytes.length;
+  int? get contentLength {
+    final length = _header(HttpHeaders.contentLengthHeader);
+    return length != null ? int.tryParse(length) : null;
+  }
 
   @override
   DateTime get validTill {
     // Without a cache-control header we keep the file for a week
     var ageDuration = const Duration(days: 7);
-    final cacheControl = _header(HttpHeaders.cacheControlHeader);
-    if (cacheControl != null) {
-      final controlSettings = cacheControl.split(',');
+    final controlHeader = _header(HttpHeaders.cacheControlHeader);
+    if (controlHeader != null) {
+      final controlSettings = controlHeader.split(',');
       for (final setting in controlSettings) {
         final sanitizedSetting = setting.trim().toLowerCase();
         if (sanitizedSetting == 'no-cache') {
@@ -72,7 +86,4 @@ class CompatFileServiceGetResponse implements FileServiceResponse {
     }
     return fileExtension;
   }
-
-  @override
-  int get statusCode => legacyResponse.statusCode as int;
 }

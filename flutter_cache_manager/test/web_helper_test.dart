@@ -22,7 +22,9 @@ void main() {
       var store = CacheStore(config);
 
       final fileService = MockFileService();
-      when(fileService.get(imageUrl, headers: anyNamed('headers')))
+      when(fileService.get(imageUrl,
+              headers: anyNamed('headers'),
+              cancelToken: anyNamed('cancelToken')))
           .thenAnswer((_) {
         return Future.value(MockFileFetcherResponse(
             Stream.value([0, 1, 2, 3, 4, 5]),
@@ -47,7 +49,9 @@ void main() {
       var store = CacheStore(config);
 
       final fileService = MockFileService();
-      when(fileService.get(imageUrl, headers: anyNamed('headers')))
+      when(fileService.get(imageUrl,
+              headers: anyNamed('headers'),
+              cancelToken: anyNamed('cancelToken')))
           .thenAnswer((_) {
         return Future.value(MockFileFetcherResponse(
             Stream.value([]), 0, null, '', 404, DateTime.now()));
@@ -68,7 +72,9 @@ void main() {
       var store = CacheStore(config);
 
       final fileService = MockFileService();
-      when(fileService.get(imageUrl, headers: anyNamed('headers')))
+      when(fileService.get(imageUrl,
+              headers: anyNamed('headers'),
+              cancelToken: anyNamed('cancelToken')))
           .thenAnswer((_) {
         return Future.value(MockFileFetcherResponse(
             Stream.value([]), 0, 'testv1', '.jpg', 304, DateTime.now()));
@@ -90,7 +96,9 @@ void main() {
       var store = _createStore(config);
 
       final fileService = MockFileService();
-      when(fileService.get(imageUrl, headers: anyNamed('headers')))
+      when(fileService.get(imageUrl,
+              headers: anyNamed('headers'),
+              cancelToken: anyNamed('cancelToken')))
           .thenAnswer((_) {
         return Future.value(MockFileFetcherResponse(
             Stream.value([0, 1, 2, 3, 4, 5]),
@@ -118,7 +126,9 @@ void main() {
       var store = _createStore(config);
 
       final fileService = MockFileService();
-      when(fileService.get(imageUrl, headers: anyNamed('headers')))
+      when(fileService.get(imageUrl,
+              headers: anyNamed('headers'),
+              cancelToken: anyNamed('cancelToken')))
           .thenAnswer((_) {
         return Future.value(MockFileFetcherResponse(
             Stream.value([0, 1, 2, 3, 4, 5]),
@@ -151,11 +161,17 @@ void main() {
       var completer2 = Completer<FileServiceResponse>();
       var completer3 = Completer<FileServiceResponse>();
 
-      when(fileService.get(url1, headers: anyNamed('headers')))
+      when(fileService.get(url1,
+              headers: anyNamed('headers'),
+              cancelToken: anyNamed('cancelToken')))
           .thenAnswer((realInvocation) => completer1.future);
-      when(fileService.get(url2, headers: anyNamed('headers')))
+      when(fileService.get(url2,
+              headers: anyNamed('headers'),
+              cancelToken: anyNamed('cancelToken')))
           .thenAnswer((realInvocation) => completer2.future);
-      when(fileService.get(url3, headers: anyNamed('headers')))
+      when(fileService.get(url3,
+              headers: anyNamed('headers'),
+              cancelToken: anyNamed('cancelToken')))
           .thenAnswer((realInvocation) => completer3.future);
 
       var webHelper = WebHelper(store, fileService);
@@ -165,14 +181,24 @@ void main() {
 
       await Future.delayed(const Duration(microseconds: 1));
 
-      verify(fileService.get(url1, headers: anyNamed('headers'))).called(1);
-      verify(fileService.get(url2, headers: anyNamed('headers'))).called(1);
-      verifyNever(fileService.get(url3, headers: anyNamed('headers')));
+      verify(fileService.get(url1,
+              headers: anyNamed('headers'),
+              cancelToken: anyNamed('cancelToken')))
+          .called(1);
+      verify(fileService.get(url2,
+              headers: anyNamed('headers'),
+              cancelToken: anyNamed('cancelToken')))
+          .called(1);
+      verifyNever(fileService.get(url3,
+          headers: anyNamed('headers'), cancelToken: anyNamed('cancelToken')));
 
       completer1.complete(MockFileFetcherResponse.basic());
 
       await Future.delayed(const Duration(microseconds: 1));
-      verify(fileService.get(url3, headers: anyNamed('headers'))).called(1);
+      verify(fileService.get(url3,
+              headers: anyNamed('headers'),
+              cancelToken: anyNamed('cancelToken')))
+          .called(1);
     });
   });
 
@@ -187,7 +213,9 @@ void main() {
       config.returnsCacheObject(imageUrl, fileName, validTill);
 
       final fileService = MockFileService();
-      when(fileService.get(imageUrl, headers: anyNamed('headers')))
+      when(fileService.get(imageUrl,
+              headers: anyNamed('headers'),
+              cancelToken: anyNamed('cancelToken')))
           .thenAnswer((_) {
         return Future.value(MockFileFetcherResponse(
             Stream.value([0, 1, 2, 3, 4, 5]),

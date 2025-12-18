@@ -41,18 +41,21 @@ extension ConfigExtensions on Config {
   void verifyNoDownloadCall() {
     verifyNoMoreInteractions(fileService);
     verifyNever(
-      mockFileService.get(any, headers: anyNamed('headers')),
+      mockFileService.get(any,
+          headers: anyNamed('headers'), cancelToken: anyNamed('cancelToken')),
     );
-    verifyNever(mockFileService.get(any));
+    verifyNever(mockFileService.get(any, cancelToken: anyNamed('cancelToken')));
   }
 
   Future<void> waitForDownload() async {
-    await untilCalled(mockFileService.get(any, headers: anyNamed('headers')));
+    await untilCalled(mockFileService.get(any,
+        headers: anyNamed('headers'), cancelToken: anyNamed('cancelToken')));
   }
 
   void verifyDownloadCall([int count = 1]) {
     verify(
-      mockFileService.get(any, headers: anyNamed('headers')),
+      mockFileService.get(any,
+          headers: anyNamed('headers'), cancelToken: anyNamed('cancelToken')),
     ).called(count);
   }
 }
