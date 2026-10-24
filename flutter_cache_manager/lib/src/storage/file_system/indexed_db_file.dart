@@ -453,7 +453,10 @@ class _IndexedDbIOSink implements IOSink {
 
   final IndexedDbFile _file;
   final FileMode _mode;
-  final _buffer = <int>[];
+  // A BytesBuilder keeps the received chunks as byte arrays. A growable
+  // List<int> stores one boxed element per byte, so buffering a large
+  // download (a 200 MB PDF) needs gigabytes and stalls the browser tab.
+  final _buffer = BytesBuilder(copy: true);
   final _completer = Completer<void>();
   bool _isClosed = false;
 
@@ -465,7 +468,7 @@ class _IndexedDbIOSink implements IOSink {
     if (_isClosed) {
       throw StateError('StreamSink is closed');
     }
-    _buffer.addAll(data);
+    _buffer.add(data);
   }
 
   @override
@@ -474,7 +477,7 @@ class _IndexedDbIOSink implements IOSink {
       throw StateError('StreamSink is closed');
     }
     final string = object.toString();
-    _buffer.addAll(encoding.encode(string));
+    _buffer.add(encoding.encode(string));
   }
 
   @override
@@ -483,7 +486,7 @@ class _IndexedDbIOSink implements IOSink {
       throw StateError('StreamSink is closed');
     }
     final string = objects.join(separator);
-    _buffer.addAll(encoding.encode(string));
+    _buffer.add(encoding.encode(string));
   }
 
   @override
@@ -513,7 +516,7 @@ class _IndexedDbIOSink implements IOSink {
     }
     final completer = Completer<void>();
     stream.listen(
-      (data) => _buffer.addAll(data),
+      (data) => _buffer.add(data),
       onError: completer.completeError,
       onDone: completer.complete,
       cancelOnError: true,
@@ -524,7 +527,7 @@ class _IndexedDbIOSink implements IOSink {
   @override
   Future flush() async {
     if (_buffer.isNotEmpty) {
-      await _file.writeAsBytes(_buffer, mode: _mode);
+      await _file.writeAsBytes(_buffer.toBytes(), mode: _mode);
     }
   }
 
