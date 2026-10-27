@@ -11,5 +11,6 @@ export 'src/result/result.dart';
 export 'src/storage/cache_info_repositories/cache_info_repositories.dart';
 export 'src/storage/cache_object.dart';
 export 'src/storage/file_system/file_system.dart';
+export 'src/storage/indexed_db/indexed_db_cache.dart';
 export 'src/web/file_service.dart';
 export 'src/web/web_helper.dart' show HttpExceptionWithStatus;

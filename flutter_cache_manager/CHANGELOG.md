@@ -1,3 +1,8 @@
+## [3.5.0] - 2026-10-27
+
+* Adds opt-in `IndexedDbCache` browser storage for file chunks and cache metadata, with atomic replacement, quota eviction and explicit connection cleanup. Default web storage is unchanged.
+* Treats an independently removed file as a miss in memory-only cache lookups without discarding a concurrent replacement.
+
 ## [3.4.6] - 2026-10-27
 
 * Catches unhandled asynchronous errors when updating cache-hit metadata and during scheduled cleanup in `CacheStore` ([#535](https://github.com/Baseflow/flutter_cache_manager/issues/535)).

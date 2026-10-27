@@ -4,8 +4,11 @@ import 'package:clock/clock.dart';
 import 'package:file/file.dart';
 import 'package:file/memory.dart';
 import 'package:flutter_cache_manager/src/cache_store.dart';
+import 'package:flutter_cache_manager/src/config/config.dart';
 import 'package:flutter_cache_manager/src/logger.dart';
 import 'package:flutter_cache_manager/src/storage/cache_object.dart';
+import 'package:flutter_cache_manager/src/storage/file_system/file_system.dart'
+    as cache_fs;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mockito/mockito.dart';
 
@@ -132,8 +135,9 @@ void main() {
       },
     );
 
-    test('Store should return null if file is not cached', () async {
+    test('Concurrent removals tolerate a file deleted after exists', () async {
       var config = createTestConfig();
+      when(config.mockRepo.close()).thenAnswer((_) async => true);
       await config.returnsFile(fileName);
       config.returnsCacheObject(
         fileUrl,
@@ -153,7 +157,12 @@ void main() {
         store.removeCachedFile(cacheObject),
       ]);
 
-      expect(() => results, returnsNormally);
+      await results;
+      expect(
+        await (await config.fileSystem.createFile(fileName)).exists(),
+        isFalse,
+      );
+      await store.dispose();
     });
 
     test('Store should return null when file is no longer cached', () async {
@@ -247,6 +256,52 @@ void main() {
         expect(store.memoryCacheContainsKey('unseen-file'), false);
       },
     );
+
+    test(
+      'memory-only lookup rejects a file removed after it was cached',
+      () async {
+        final config = createTestConfig();
+        when(config.mockRepo.close()).thenAnswer((_) async => true);
+        final file = await config.returnsFile(fileName);
+        final store = CacheStore(config);
+        await store.putFile(cacheObject);
+        expect(await store.getFileFromMemory(fileUrl), isNotNull);
+        await file.delete();
+        expect(await store.getFileFromMemory(fileUrl), isNull);
+        expect(store.memoryCacheContainsKey(fileUrl), isFalse);
+        verifyNever(config.mockRepo.get(any));
+        await store.dispose();
+      },
+    );
+
+    test(
+      'a stale memory lookup cannot remove a concurrent replacement',
+      () async {
+        final original = createTestConfig();
+        when(original.mockRepo.close()).thenAnswer((_) async => true);
+        final delayed = _DelayedFileSystem(original.fileSystem, fileName);
+        final config = Config(
+          'memory-race',
+          repo: original.repo,
+          fileSystem: delayed,
+        );
+        final store = CacheStore(config);
+        await store.putFile(cacheObject);
+        final staleLookup = store.getFileFromMemory(fileUrl);
+        await delayed.entered.future;
+        final replacement = cacheObject.copyWith(relativePath: 'replacement');
+        await original.returnsFile('replacement');
+        await store.putFile(replacement);
+        delayed.release.complete();
+        expect(await staleLookup, isNull);
+        expect(store.memoryCacheContainsKey(fileUrl), isTrue);
+        expect(
+          (await store.getFileFromMemory(fileUrl))!.file.path,
+          endsWith('replacement'),
+        );
+        await store.dispose();
+      },
+    );
   });
 
   group('Storing files in store', () {
@@ -322,6 +377,7 @@ void main() {
         when(
           config.mockRepo.updateOrInsert(initialObject),
         ).thenAnswer((_) => Future.value(initialObject));
+        await config.returnsFile(initialObject.relativePath);
         await store.putFile(initialObject);
         expect(store.memoryCacheContainsKey(initialObject.key), isTrue);
 
@@ -623,4 +679,21 @@ TestCacheLogger setUpTestLogger() {
   cacheLogger = testLogger;
   addTearDown(() => cacheLogger = originalLogger);
   return testLogger;
+}
+
+class _DelayedFileSystem extends cache_fs.FileSystem {
+  _DelayedFileSystem(this.delegate, this.delayedName);
+  final cache_fs.FileSystem delegate;
+  final String delayedName;
+  final entered = Completer<void>();
+  final release = Completer<void>();
+
+  @override
+  Future<File> createFile(String name) async {
+    if (name == delayedName) {
+      if (!entered.isCompleted) entered.complete();
+      await release.future;
+    }
+    return delegate.createFile(name);
+  }
 }

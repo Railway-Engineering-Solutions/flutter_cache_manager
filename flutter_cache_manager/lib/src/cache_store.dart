@@ -130,6 +130,14 @@ class CacheStore {
       return null;
     }
     final file = await fileSystem.createFile(cacheObject.relativePath);
+    if (!await file.exists()) {
+      // Browser quota eviction (or the OS) may remove bytes independently of
+      // this in-process row. Do not discard a newer concurrent replacement.
+      if (identical(_memCache[key], cacheObject)) {
+        _memCache.remove(key);
+      }
+      return null;
+    }
     return FileInfo(
       file,
       FileSource.Cache,
@@ -252,12 +260,15 @@ class CacheStore {
     _futureCache.remove(cacheObject.key);
     final file = await fileSystem.createFile(cacheObject.relativePath);
 
-    if (file.existsSync()) {
+    if (await file.exists()) {
       try {
         await file.delete();
-        // ignore: unused_catch_clause
-      } on PathNotFoundException catch (e) {
-        // File has already been deleted. Do nothing #184
+      } on FileSystemException catch (error) {
+        // Another removal may win after the asynchronous existence check.
+        // package:file's memory backend reports ENOENT as the base exception.
+        if (error is! PathNotFoundException && error.osError?.errorCode != 2) {
+          rethrow;
+        }
       }
     }
   }

@@ -81,6 +81,46 @@ class CustomCacheManager {
   );
 }
 ```
+### Opt-in persistent browser cache
+
+Web caches still use memory-only files and a non-storing metadata repository by
+default. To retain cached bytes and metadata across page reloads, pass the same
+`IndexedDbCache` instance as both storage components:
+
+```dart
+final storage = IndexedDbCache('my-browser-cache-v1');
+final manager = CacheManager(
+  Config('my-browser-cache-v1', repo: storage, fileSystem: storage),
+);
+// Use the usual CacheManager API. Await manager.dispose() when finished.
+```
+
+Use one manager per cache key. IndexedDB is origin-local cache storage: browser
+clearing, private mode and storage quotas can remove or refuse data. No persistent
+storage permission is requested. Unsupported platforms fail rather than silently
+falling back to memory; keep the default configuration on native platforms.
+
+Files are streamed in 64 KiB chunks. `addStream`/`openRead` provide bounded
+backpressure; synchronous `IOSink.add` can queue caller-provided buffers, and
+`readAsBytes` necessarily collects the whole file. A replacement becomes visible
+only after its transaction commits. A failed stream removes its staged chunks and
+retains the previous committed file. Staging leases expire after a day without a
+chunk write; resuming an expired write fails instead of publishing incomplete data.
+On quota failure, storage evicts least-recently-touched files, their chunks and all
+metadata aliases, then retries once. The file being replaced is protected.
+
+The returned files support the asynchronous operations used by CacheManager, not
+synchronous disk IO, native file descriptors, directory traversal or watchers.
+Reads concurrent with replacement or eviction may fail rather than mix versions.
+Await `dispose()` to close the manager's connection and abort unfinished writes.
+Direct storage users must call `open()` again after the final `close()`.
+`deleteDataFile()` deletes the entire named namespace, unlike `emptyCache()` which
+removes registered cache entries. Another tab can block a delete: the error is
+reported, but the browser request may still finish once that tab closes.
+
+This storage starts a new namespace/schema; it does not migrate unpublished fork
+databases. Use a distinct database name when adopting it.
+
 ## Frequently Asked Questions
 - [How are the cache files stored?](#how-are-the-cache-files-stored)
 - [When are the cached files updated?](#when-are-the-cached-files-updated)
