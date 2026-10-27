@@ -115,67 +115,82 @@ class CacheManager implements BaseCacheManager {
     Map<String, String>? headers,
     bool withProgress = false,
   }) {
-    key ??= url;
-    final streamController = StreamController<FileResponse>();
-    _pushFileToStream(streamController, url, key, headers, withProgress);
-    return streamController.stream;
+    final state = _FileStreamState();
+    final controller = StreamController<FileResponse>(onCancel: state.cancel);
+    unawaited(
+      _pushFileToStream(controller, url, key, headers, withProgress, state),
+    );
+    return controller.stream;
   }
 
   Future<void> _pushFileToStream(
-    StreamController<dynamic> streamController,
+    StreamController<FileResponse> controller,
     String url,
     String? key,
     Map<String, String>? headers,
     bool withProgress,
+    _FileStreamState state,
   ) async {
     key ??= url;
     FileInfo? cacheFile;
     try {
       cacheFile = await getFileFromCache(key);
-      if (cacheFile != null) {
-        streamController.add(cacheFile);
-        withProgress = false;
-      }
     } on Object catch (e) {
       cacheLogger.log(
         'CacheManager: Failed to load cached file for $url with error:\n$e',
         CacheManagerLogLevel.debug,
       );
     }
+    if (cacheFile != null) {
+      if (state.cancelled) return;
+      controller.add(cacheFile);
+      withProgress = false;
+    }
+    if (state.cancelled) return;
     if (cacheFile == null || cacheFile.validTill.isBefore(DateTime.now())) {
       try {
-        await for (final response in _webHelper.downloadFile(
-          url,
-          key: key,
-          authHeaders: headers,
-        )) {
-          if (response is DownloadProgress && withProgress) {
-            streamController.add(response);
-          }
-          if (response is FileInfo) {
-            streamController.add(response);
-          }
-        }
+        final done = state.downloadDone = Completer<void>();
+        state.subscription = _webHelper
+            .downloadFile(url, key: key, authHeaders: headers)
+            .listen(
+              (response) {
+                if (response is DownloadProgress && withProgress) {
+                  controller.add(response);
+                }
+                if (response is FileInfo) {
+                  controller.add(response);
+                }
+              },
+              onError: (Object error, StackTrace stack) {
+                if (!done.isCompleted) done.completeError(error, stack);
+              },
+              onDone: () {
+                if (!done.isCompleted) done.complete();
+              },
+              cancelOnError: true,
+            );
+        if (state.cancelled) await state.cancel();
+        await done.future;
       } on Object catch (e) {
         cacheLogger.log(
           'CacheManager: Failed to download file from $url with error:\n$e',
           CacheManagerLogLevel.debug,
         );
-        if (cacheFile == null && streamController.hasListener) {
-          streamController.addError(e);
+        if (cacheFile == null && !state.cancelled && controller.hasListener) {
+          controller.addError(e);
         }
 
         if (cacheFile != null &&
             e is HttpExceptionWithStatus &&
             e.statusCode == 404) {
-          if (streamController.hasListener) {
-            streamController.addError(e);
-          }
           await removeFile(key);
+          if (!state.cancelled && controller.hasListener) {
+            controller.addError(e);
+          }
         }
       }
     }
-    streamController.close();
+    unawaited(controller.close());
   }
 
   ///Download the file and add to cache
@@ -308,5 +323,102 @@ class CacheManager implements BaseCacheManager {
   @override
   Future<void> dispose() async {
     await _config.repo.close();
+  }
+}
+
+/// Additive cancellation APIs: existing [BaseCacheManager] implementations and
+/// overrides do not acquire new parameters or abstract methods.
+extension CancellableCacheManager on BaseCacheManager {
+  /// Like [BaseCacheManager.getFileStream], with cancellation for this caller.
+  ///
+  /// [CacheManager] releases its shared download when the subscription ends;
+  /// it aborts the transport only after the last caller leaves. Custom managers
+  /// retain responsibility for responding to subscription cancellation.
+  Stream<FileResponse> getFileStreamWithCancellation(
+    String url, {
+    required DownloadCancellationToken cancellationToken,
+    String? key,
+    Map<String, String>? headers,
+    bool withProgress = false,
+  }) async* {
+    cancellationToken.throwIfCancelled();
+    yield* cancellationToken.bind(
+      getFileStream(
+        url,
+        key: key,
+        headers: headers,
+        withProgress: withProgress,
+      ),
+    );
+  }
+
+  /// Returns the fresh file, cancelling only this caller's wait when requested.
+  Future<File> getSingleFileWithCancellation(
+    String url, {
+    required DownloadCancellationToken cancellationToken,
+    String? key,
+    Map<String, String>? headers,
+  }) async {
+    cancellationToken.throwIfCancelled();
+    final cached = await cancellationToken
+        .bind(Stream.fromFuture(getFileFromCache(key ?? url)))
+        .first;
+    if (cached != null && cached.validTill.isAfter(DateTime.now())) {
+      return cached.file;
+    }
+    cancellationToken.throwIfCancelled();
+    final manager = this;
+    if (manager is CacheManager) {
+      return (await manager.downloadFileWithCancellation(
+        url,
+        cancellationToken: cancellationToken,
+        key: key,
+        authHeaders: headers,
+      )).file;
+    }
+    final response = await cancellationToken
+        .bind(
+          Stream.fromFuture(downloadFile(url, key: key, authHeaders: headers)),
+        )
+        .first;
+    return response.file;
+  }
+}
+
+class _FileStreamState {
+  bool cancelled = false;
+  StreamSubscription<FileResponse>? subscription;
+  Completer<void>? downloadDone;
+
+  Future<void> cancel() async {
+    cancelled = true;
+    await subscription?.cancel();
+    final done = downloadDone;
+    if (done != null && !done.isCompleted) done.complete();
+  }
+}
+
+/// Direct-download cancellation without changing [CacheManager.downloadFile].
+extension CancellableDirectDownload on CacheManager {
+  /// Downloads a file while retaining other callers' ownership of a shared URL.
+  Future<FileInfo> downloadFileWithCancellation(
+    String url, {
+    required DownloadCancellationToken cancellationToken,
+    String? key,
+    Map<String, String>? authHeaders,
+    bool force = false,
+  }) async {
+    cancellationToken.throwIfCancelled();
+    final response = await cancellationToken
+        .bind(
+          webHelper.downloadFile(
+            url,
+            key: key,
+            authHeaders: authHeaders,
+            ignoreMemCache: force,
+          ),
+        )
+        .firstWhere((response) => response is FileInfo);
+    return response as FileInfo;
   }
 }

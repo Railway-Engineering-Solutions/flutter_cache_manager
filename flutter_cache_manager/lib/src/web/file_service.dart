@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:clock/clock.dart';
 import 'package:flutter_cache_manager/src/web/mime_converter.dart';
+import 'package:flutter_cache_manager/src/web/download_cancellation.dart';
 import 'package:http/http.dart' as http;
 
 ///Flutter Cache Manager
@@ -17,6 +18,17 @@ abstract class FileService {
   int concurrentFetches = 10;
 
   Future<FileServiceResponse> get(String url, {Map<String, String>? headers});
+}
+
+/// Optional transport capability. Existing [FileService.get] overrides remain
+/// valid; services without this capability still have their response stream
+/// cancelled when its last caller leaves.
+abstract interface class CancellableFileService {
+  Future<FileServiceResponse> getWithCancellation(
+    String url, {
+    Map<String, String>? headers,
+    required DownloadCancellationToken cancellationToken,
+  });
 }
 
 /// [HttpFileService] is the most common file service and the default for
@@ -39,6 +51,31 @@ class HttpFileService extends FileService {
     final httpResponse = await _httpClient.send(req);
 
     return HttpGetResponse(httpResponse);
+  }
+}
+
+/// The default abortable HTTP transport. This separate capability leaves
+/// existing [HttpFileService] subclasses' overridden [HttpFileService.get]
+/// methods on their original dispatch path, including Firebase URL resolution.
+class CancellableHttpFileService extends HttpFileService
+    implements CancellableFileService {
+  CancellableHttpFileService({super.httpClient});
+
+  /// Aborts only the request owned by the shared download's internal token.
+  @override
+  Future<FileServiceResponse> getWithCancellation(
+    String url, {
+    Map<String, String>? headers,
+    required DownloadCancellationToken cancellationToken,
+  }) async {
+    cancellationToken.throwIfCancelled();
+    final request = http.AbortableRequest(
+      'GET',
+      Uri.parse(url),
+      abortTrigger: cancellationToken.whenCancelled,
+    );
+    if (headers != null) request.headers.addAll(headers);
+    return HttpGetResponse(await _httpClient.send(request));
   }
 }
 

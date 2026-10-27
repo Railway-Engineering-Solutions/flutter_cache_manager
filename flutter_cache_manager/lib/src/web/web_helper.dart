@@ -6,7 +6,6 @@ import 'package:clock/clock.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:flutter_cache_manager/src/cache_store.dart';
-import 'package:flutter_cache_manager/src/web/queue_item.dart';
 import 'package:rxdart/rxdart.dart';
 import 'package:uuid/uuid.dart';
 
@@ -20,13 +19,13 @@ const statusCodesFileNotChanged = [HttpStatus.notModified];
 class WebHelper {
   WebHelper(this._store, FileService? fileFetcher)
     : _memCache = {},
-      fileFetcher = fileFetcher ?? HttpFileService();
+      fileFetcher = fileFetcher ?? CancellableHttpFileService();
 
   final CacheStore _store;
   @visibleForTesting
   final FileService fileFetcher;
-  final Map<String, BehaviorSubject<FileResponse>> _memCache;
-  final Queue<QueueItem> _queue = Queue();
+  final Map<String, _DownloadJob> _memCache;
+  final Queue<_DownloadJob> _queue = Queue();
 
   ///Download the file from the url
   Stream<FileResponse> downloadFile(
@@ -35,57 +34,107 @@ class WebHelper {
     Map<String, String>? authHeaders,
     bool ignoreMemCache = false,
   }) {
-    key ??= url;
-    var subject = _memCache[key];
-    if (subject == null || ignoreMemCache) {
-      subject = BehaviorSubject<FileResponse>();
-      _memCache[key] = subject;
-      _downloadOrAddToQueue(url, key, authHeaders);
-    }
-    return subject.stream;
+    final cacheKey = key ?? url;
+    var requestedJob =
+        (ignoreMemCache ? null : _memCache[cacheKey]) ??
+        _DownloadJob(url, cacheKey, authHeaders);
+    _schedule(requestedJob);
+    return Stream<FileResponse>.multi((controller) {
+      var job = requestedJob;
+      if (job.cancellation.isCancelled) {
+        job =
+            (ignoreMemCache ? null : _memCache[cacheKey]) ??
+            _DownloadJob(url, cacheKey, authHeaders);
+        requestedJob = job;
+      }
+      final current = job;
+      current.listeners++;
+      var released = false;
+      void release() {
+        if (released) return;
+        released = true;
+        current.listeners--;
+        if (current.listeners == 0 && !current.finished) {
+          current.cancellation.cancel();
+          if (_queue.remove(current)) {
+            _finish(current);
+          }
+          if (identical(_memCache[cacheKey], current)) {
+            _memCache.remove(cacheKey);
+          }
+        }
+      }
+
+      final subscription = current.subject.listen(
+        controller.addSync,
+        onError: controller.addErrorSync,
+        onDone: () {
+          release();
+          controller.closeSync();
+        },
+      );
+      controller.onPause = subscription.pause;
+      controller.onResume = subscription.resume;
+      controller.onCancel = () async {
+        release();
+        await subscription.cancel();
+      };
+      _schedule(current);
+    }, isBroadcast: true);
+  }
+
+  void _schedule(_DownloadJob job) {
+    if (job.scheduled || job.finished) return;
+    job.scheduled = true;
+    _memCache[job.key] = job;
+    unawaited(_downloadOrAddToQueue(job));
   }
 
   var concurrentCalls = 0;
 
-  Future<void> _downloadOrAddToQueue(
-    String url,
-    String key,
-    Map<String, String>? authHeaders,
-  ) async {
+  Future<void> _downloadOrAddToQueue(_DownloadJob job) async {
+    if (job.cancellation.isCancelled) {
+      _finish(job);
+      return;
+    }
     //Add to queue if there are too many calls.
     if (concurrentCalls >= fileFetcher.concurrentFetches) {
-      _queue.add(QueueItem(url, key, authHeaders));
+      _queue.add(job);
       return;
     }
     cacheLogger.log(
-      'CacheManager: Downloading $url',
+      'CacheManager: Downloading ${job.url}',
       CacheManagerLogLevel.verbose,
     );
 
     concurrentCalls++;
-    final subject = _memCache[key]!;
     try {
       await for (final result in _updateFile(
-        url,
-        key,
-        authHeaders: authHeaders,
+        job.url,
+        job.key,
+        authHeaders: job.headers,
+        cancellation: job.cancellation,
       )) {
-        subject.add(result);
+        job.subject.add(result);
       }
     } on Object catch (e, stackTrace) {
-      subject.addError(e, stackTrace);
+      job.subject.addError(e, stackTrace);
     } finally {
       concurrentCalls--;
-      await subject.close();
-      _memCache.remove(key);
+      _finish(job);
       _checkQueue();
     }
   }
 
+  void _finish(_DownloadJob job) {
+    job.finished = true;
+    if (identical(_memCache[job.key], job)) _memCache.remove(job.key);
+    unawaited(job.subject.close());
+  }
+
   void _checkQueue() {
     if (_queue.isEmpty) return;
-    final next = _queue.removeFirst();
-    _downloadOrAddToQueue(next.url, next.key, next.headers);
+    unawaited(_downloadOrAddToQueue(_queue.removeFirst()));
   }
 
   ///Download the file from the url
@@ -93,8 +142,10 @@ class WebHelper {
     String url,
     String key, {
     Map<String, String>? authHeaders,
+    required DownloadCancellationToken cancellation,
   }) async* {
     var cacheObject = await _store.retrieveCacheData(key);
+    cancellation.throwIfCancelled();
     cacheObject = cacheObject == null
         ? CacheObject(
             url,
@@ -103,14 +154,15 @@ class WebHelper {
             relativePath: '${const Uuid().v1()}.file',
           )
         : cacheObject.copyWith(url: url);
-    final response = await _download(cacheObject, authHeaders);
-    yield* _manageResponse(cacheObject, response);
+    final response = await _download(cacheObject, authHeaders, cancellation);
+    yield* _manageResponse(cacheObject, response, cancellation);
   }
 
   Future<FileServiceResponse> _download(
     CacheObject cacheObject,
     Map<String, String>? authHeaders,
-  ) {
+    DownloadCancellationToken cancellation,
+  ) async {
     final headers = <String, String>{};
 
     final etag = cacheObject.eTag;
@@ -124,13 +176,50 @@ class WebHelper {
       headers.addAll(authHeaders);
     }
 
-    return fileFetcher.get(cacheObject.url, headers: headers);
+    cancellation.throwIfCancelled();
+    final transport = fileFetcher;
+    final pending = transport is CancellableFileService
+        ? (transport as CancellableFileService).getWithCancellation(
+            cacheObject.url,
+            headers: headers,
+            cancellationToken: cancellation,
+          )
+        : transport.get(cacheObject.url, headers: headers);
+    final result = Completer<FileServiceResponse>();
+    final removeListener = cancellation.onCancel(() {
+      if (!result.isCompleted) {
+        result.completeError(const DownloadCancelledException());
+      }
+    });
+    pending.then(
+      (response) {
+        if (result.isCompleted) {
+          // A legacy service cannot abort before headers. Release a late body
+          // rather than leaving an unobserved response alive after cancellation.
+          unawaited(
+            response.content.listen((_) {}, onError: (Object _) {}).cancel(),
+          );
+        } else {
+          result.complete(response);
+        }
+      },
+      onError: (Object error, StackTrace stack) {
+        if (!result.isCompleted) result.completeError(error, stack);
+      },
+    );
+    try {
+      return await result.future;
+    } finally {
+      removeListener();
+    }
   }
 
   Stream<FileResponse> _manageResponse(
     CacheObject cacheObject,
     FileServiceResponse response,
+    DownloadCancellationToken cancellation,
   ) async* {
+    cancellation.throwIfCancelled();
     final hasNewFile = statusCodesNewFile.contains(response.statusCode);
     final keepOldFile = statusCodesFileNotChanged.contains(response.statusCode);
     if (!hasNewFile && !keepOldFile) {
@@ -145,7 +234,11 @@ class WebHelper {
     var newCacheObject = _setDataFromHeaders(cacheObject, response);
     if (statusCodesNewFile.contains(response.statusCode)) {
       var savedBytes = 0;
-      await for (final progress in _saveFile(newCacheObject, response)) {
+      await for (final progress in _saveFile(
+        newCacheObject,
+        response,
+        cancellation,
+      )) {
         savedBytes = progress;
         yield DownloadProgress(
           cacheObject.url,
@@ -157,6 +250,7 @@ class WebHelper {
     }
 
     try {
+      cancellation.throwIfCancelled();
       await _store.putFile(newCacheObject);
     } catch (e) {
       if (statusCodesNewFile.contains(response.statusCode)) {
@@ -188,10 +282,6 @@ class WebHelper {
     var filePath = cacheObject.relativePath;
 
     if (!statusCodesFileNotChanged.contains(response.statusCode)) {
-      if (!filePath.endsWith(fileExtension)) {
-        //Delete old file directly when file extension changed
-        _removeOldFile(filePath);
-      }
       // Store new file on different path
       filePath = '${const Uuid().v1()}$fileExtension';
     }
@@ -202,12 +292,17 @@ class WebHelper {
     );
   }
 
-  Stream<int> _saveFile(CacheObject cacheObject, FileServiceResponse response) {
+  Stream<int> _saveFile(
+    CacheObject cacheObject,
+    FileServiceResponse response,
+    DownloadCancellationToken cancellation,
+  ) {
     final receivedBytesResultController = StreamController<int>();
     _saveFileAndPostUpdates(
       receivedBytesResultController,
       cacheObject,
       response,
+      cancellation,
     );
     return receivedBytesResultController.stream;
   }
@@ -216,23 +311,54 @@ class WebHelper {
     StreamController<int> receivedBytesResultController,
     CacheObject cacheObject,
     FileServiceResponse response,
+    DownloadCancellationToken cancellation,
   ) async {
-    final file = await _store.fileSystem.createFile(cacheObject.relativePath);
-
+    Stream<List<int>>? content;
     try {
+      content = response.content;
+      final file = await _store.fileSystem.createFile(cacheObject.relativePath);
+      cancellation.throwIfCancelled();
       var receivedBytes = 0;
       final sink = file.openWrite();
-      await response.content
-          .map((s) {
+      try {
+        await sink.addStream(
+          cancellation.bind(content).map((s) {
             receivedBytes += s.length;
             receivedBytesResultController.add(receivedBytes);
             return s;
-          })
-          .pipe(sink);
+          }),
+        );
+        await sink.close();
+        cancellation.throwIfCancelled();
+      } on Object {
+        try {
+          await sink.close();
+        } on Object {
+          // Preserve the original stream/cancellation error, not close's echo.
+        }
+        rethrow;
+      }
     } on Object catch (e, stacktrace) {
+      try {
+        // Also release a body not yet subscribed when file creation or the
+        // cancellation check failed. An already-listened single-subscription
+        // stream rejects this attempt; its addStream owner already cancelled it.
+        await content?.listen((_) {}, onError: (Object _) {}).cancel();
+      } on Object {
+        // Preserve the original error if the body was already consumed.
+      }
+      try {
+        await _removeOldFile(cacheObject.relativePath);
+      } on Object catch (cleanupError) {
+        cacheLogger.log(
+          'CacheManager: Partial-file cleanup failed: $cleanupError',
+          CacheManagerLogLevel.warning,
+        );
+      }
       receivedBytesResultController.addError(e, stacktrace);
+    } finally {
+      await receivedBytesResultController.close();
     }
-    await receivedBytesResultController.close();
   }
 
   Future<void> _removeOldFile(String? relativePath) async {
@@ -247,6 +373,19 @@ class WebHelper {
       // points at this path, so there is nothing to recover here.
     }
   }
+}
+
+class _DownloadJob {
+  _DownloadJob(this.url, this.key, this.headers);
+
+  final String url;
+  final String key;
+  final Map<String, String>? headers;
+  final subject = BehaviorSubject<FileResponse>();
+  final cancellation = DownloadCancellationToken();
+  int listeners = 0;
+  bool scheduled = false;
+  bool finished = false;
 }
 
 class HttpExceptionWithStatus extends HttpException {

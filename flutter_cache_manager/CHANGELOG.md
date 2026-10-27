@@ -1,3 +1,9 @@
+## [3.5.0] - 2026-10-27
+
+* Adds opt-in per-caller download cancellation, including file streams, single-file requests, direct downloads and image resizing, without changing existing manager or file-service method signatures.
+* Stops a shared download only when its last caller leaves, removes cancelled queued requests, and closes response streams and file sinks on cancellation or failure.
+* Removes partial download files and retains the previous cached file when a replacement download fails.
+
 ## [3.4.6] - 2026-10-27
 
 * Catches unhandled asynchronous errors when updating cache-hit metadata and during scheduled cleanup in `CacheStore` ([#535](https://github.com/Baseflow/flutter_cache_manager/issues/535)).

@@ -81,6 +81,45 @@ class CustomCacheManager {
   );
 }
 ```
+## Cancellation
+
+Use a separate `DownloadCancellationToken` for each caller:
+
+```dart
+final token = DownloadCancellationToken();
+final download = DefaultCacheManager().downloadFileWithCancellation(
+  url,
+  cancellationToken: token,
+);
+
+// Call token.cancel() when this caller no longer needs the result.
+try {
+  final info = await download;
+  // Use info.file.
+} on DownloadCancelledException {
+  // This caller cancelled; other callers can still finish their download.
+}
+```
+
+`getSingleFileWithCancellation`, `getFileStreamWithCancellation` and
+`getImageFileWithCancellation` accept the same token. Existing methods and
+`FileService.get` overrides keep their signatures. The web storage default is
+unchanged.
+
+Downloads with the same cache key share a transfer. Cancelling one caller
+detaches only that caller; the last caller leaving stops a queued or active
+download and removes its partial file. Cancelling a stream subscription also
+releases its ownership. Cancellation does not roll back a cache write that has
+already started committing, or interrupt an image decoder already in progress.
+
+The default HTTP transport supports aborting requests. Custom transports can
+implement `CancellableFileService` to abort before response headers arrive.
+Existing `HttpFileService` subclasses, including Firebase services, continue to
+use their overridden `get` method. Without the optional abort capability, a late
+response is released when it arrives; the underlying header request cannot be
+interrupted by this package. Custom `BaseCacheManager` implementations remain
+responsible for responding to subscription cancellation.
+
 ## Frequently Asked Questions
 - [How are the cache files stored?](#how-are-the-cache-files-stored)
 - [When are the cached files updated?](#when-are-the-cached-files-updated)

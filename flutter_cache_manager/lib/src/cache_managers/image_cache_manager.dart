@@ -8,6 +8,65 @@ import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 
 const supportedFileNames = ['jpg', 'jpeg', 'png', 'tga', 'cur', 'ico'];
 mixin ImageCacheManager on BaseCacheManager {
+  /// Cancellable counterpart to [getImageFile], without changing existing
+  /// overrides. Resizing is caller-owned; the underlying original download is
+  /// still shared. Cancellation during decoding prevents the subsequent cache
+  /// write but does not interrupt the platform decoder already in progress.
+  Stream<FileResponse> getImageFileWithCancellation(
+    String url, {
+    required DownloadCancellationToken cancellationToken,
+    String? key,
+    Map<String, String>? headers,
+    bool withProgress = false,
+    int? maxHeight,
+    int? maxWidth,
+  }) async* {
+    cancellationToken.throwIfCancelled();
+    if (maxHeight == null && maxWidth == null) {
+      yield* getFileStreamWithCancellation(
+        url,
+        cancellationToken: cancellationToken,
+        key: key,
+        headers: headers,
+        withProgress: withProgress,
+      );
+      return;
+    }
+    key ??= url;
+    var resizedKey = 'resized';
+    if (maxWidth != null) resizedKey += '_w$maxWidth';
+    if (maxHeight != null) resizedKey += '_h$maxHeight';
+    resizedKey += '_$key';
+    final fromCache = await getFileFromCache(resizedKey);
+    cancellationToken.throwIfCancelled();
+    if (fromCache != null) {
+      yield fromCache;
+      if (fromCache.validTill.isAfter(DateTime.now())) return;
+      withProgress = false;
+    }
+    await for (final response in getFileStreamWithCancellation(
+      url,
+      cancellationToken: cancellationToken,
+      key: key,
+      headers: headers,
+      withProgress: withProgress,
+    )) {
+      cancellationToken.throwIfCancelled();
+      if (response is DownloadProgress) yield response;
+      if (response is FileInfo) {
+        final resized = await _resizeImageFile(
+          response,
+          resizedKey,
+          maxWidth,
+          maxHeight,
+          cancellationToken: cancellationToken,
+        );
+        cancellationToken.throwIfCancelled();
+        yield resized;
+      }
+    }
+  }
+
   /// Returns a resized image file to fit within maxHeight and maxWidth. It
   /// tries to keep the aspect ratio. It stores the resized image by adding
   /// the size to the key or url. For example when resizing
@@ -71,8 +130,10 @@ mixin ImageCacheManager on BaseCacheManager {
     FileInfo originalFile,
     String key,
     int? maxWidth,
-    int? maxHeight,
-  ) async {
+    int? maxHeight, {
+    DownloadCancellationToken? cancellationToken,
+  }) async {
+    cancellationToken?.throwIfCancelled();
     final originalFileName = originalFile.file.path;
     final fileExtension = originalFileName.split('.').last;
     if (!supportedFileNames.contains(fileExtension)) {
@@ -80,6 +141,7 @@ mixin ImageCacheManager on BaseCacheManager {
     }
 
     final image = await _decodeImage(originalFile.file);
+    cancellationToken?.throwIfCancelled();
 
     final shouldResize = maxWidth != null
         ? image.width > maxWidth
@@ -104,6 +166,7 @@ mixin ImageCacheManager on BaseCacheManager {
     final resizedFile = (await resized.toByteData(
       format: ui.ImageByteFormat.png,
     ))!.buffer.asUint8List();
+    cancellationToken?.throwIfCancelled();
     final maxAge = originalFile.validTill.difference(DateTime.now());
 
     final file = await putFile(
