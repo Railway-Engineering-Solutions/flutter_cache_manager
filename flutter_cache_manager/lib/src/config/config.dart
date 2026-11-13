@@ -4,8 +4,6 @@ import 'package:flutter_cache_manager/src/config/_config_unsupported.dart'
     if (dart.library.io) '_config_io.dart'
     as impl;
 
-import '../storage/file_system/file_system.dart';
-
 abstract class Config {
   /// Config file for the CacheManager.
   /// [cacheKey] is used for the folder to store files and for the database
