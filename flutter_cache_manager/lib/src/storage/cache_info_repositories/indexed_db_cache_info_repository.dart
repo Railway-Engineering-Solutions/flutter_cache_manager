@@ -5,6 +5,7 @@ import 'package:flutter_cache_manager/src/logger.dart';
 import 'package:flutter_cache_manager/src/storage/cache_info_repositories/cache_info_repository.dart';
 import 'package:flutter_cache_manager/src/storage/cache_info_repositories/helper_methods.dart';
 import 'package:flutter_cache_manager/src/storage/cache_info_repositories/indexed_db_connection_pool.dart';
+import 'package:flutter_cache_manager/src/storage/cache_info_repositories/indexed_db_schema.dart';
 import 'package:flutter_cache_manager/src/storage/cache_object.dart';
 import 'package:web/web.dart' as web;
 
@@ -15,82 +16,15 @@ class IndexedDbCacheInfoRepository extends CacheInfoRepository
 
   final String databaseName;
 
-  static const String _metadataStoreName = 'cache_metadata';
-  static const String _keyIndexName = 'key_index';
-  static const String _touchedIndexName = 'touched_index';
-  static const int _dbVersion = 2; // Incremented for new index
+  static const String _metadataStoreName = IndexedDbSchema.metadataStore;
+  static const String _keyIndexName = IndexedDbSchema.keyIndex;
+  static const String _touchedIndexName = IndexedDbSchema.touchedIndex;
 
-  late final IndexedDbConnectionPool _connectionPool;
+  late final IndexedDbConnectionPool _connectionPool =
+      IndexedDbConnectionPool.getInstance(databaseName: databaseName);
 
   Future<web.IDBDatabase> _getDatabase() async {
     return _connectionPool.getDatabase();
-  }
-
-  void _initConnectionPool() {
-    _connectionPool = IndexedDbConnectionPool.getInstance(
-      databaseName: databaseName,
-      version: _dbVersion,
-      onUpgrade: _onUpgradeNeeded,
-    );
-  }
-
-  void _onUpgradeNeeded(web.IDBDatabase db, web.IDBVersionChangeEvent e) {
-    final oldVersion = e.oldVersion;
-
-    // Create cache_metadata object store if it doesn't exist (v1)
-    if (oldVersion < 1) {
-      final hasMetadataStore = db.objectStoreNames.contains(_metadataStoreName);
-      if (!hasMetadataStore) {
-        final objectStore = db.createObjectStore(
-          _metadataStoreName,
-          web.IDBObjectStoreParameters(
-            keyPath: CacheObject.columnId.toJS,
-            autoIncrement: true,
-          ),
-        );
-        // Create index on key field for fast lookups
-        objectStore.createIndex(
-          _keyIndexName,
-          CacheObject.columnKey.toJS,
-          web.IDBIndexParameters(unique: true),
-        );
-        // Create index on touched field for efficient sorting in cleanup
-        objectStore.createIndex(
-          _touchedIndexName,
-          CacheObject.columnTouched.toJS,
-          web.IDBIndexParameters(unique: false),
-        );
-      }
-
-      // Also create cache_files object store if it doesn't exist
-      // This ensures both stores are created in the same upgrade transaction
-      const fileStoreName = 'cache_files';
-      final hasFileStore = db.objectStoreNames.contains(fileStoreName);
-      if (!hasFileStore) {
-        db.createObjectStore(
-          fileStoreName,
-          web.IDBObjectStoreParameters(keyPath: 'path'.toJS),
-        );
-      }
-    }
-
-    // Add touched index for existing databases (v2)
-    if (oldVersion < 2 && oldVersion >= 1) {
-      // We're in the upgrade transaction, get the object store
-      final request = e.target as web.IDBRequest;
-      final txn = request.transaction;
-      if (txn != null) {
-        final store = txn.objectStore(_metadataStoreName);
-        // Add index if it doesn't exist
-        if (!store.indexNames.contains(_touchedIndexName)) {
-          store.createIndex(
-            _touchedIndexName,
-            CacheObject.columnTouched.toJS,
-            web.IDBIndexParameters(unique: false),
-          );
-        }
-      }
-    }
   }
 
   @override
@@ -98,65 +32,23 @@ class IndexedDbCacheInfoRepository extends CacheInfoRepository
     if (!shouldOpenOnNewConnection()) {
       return openCompleter!.future;
     }
-    _initConnectionPool();
-    await _getDatabase();
+    // Held until close(), so the connection stays open while in use.
+    await _connectionPool.acquire();
     return opened();
   }
 
-  /// Creates a transaction with optimal performance settings.
-  /// Uses 'relaxed' durability for cache data which provides ~10x faster writes
-  /// while still persisting data on browser shutdown.
   web.IDBTransaction _createTransaction(
     web.IDBDatabase db,
     String storeName,
     String mode,
-  ) {
-    try {
-      // Try to create transaction with relaxed durability (modern browsers)
-      // Note: The durability hint may not be available in all browser versions
-      final options = web.IDBTransactionOptions();
-      return db.transaction(storeName.toJS, mode, options);
-    } catch (e) {
-      // Fallback for older browsers that don't support transaction options
-      return db.transaction(storeName.toJS, mode);
-    }
-  }
+  ) => createIndexedDbTransaction(db, [storeName], mode);
 
-  /// Checks if an error is a quota exceeded error.
-  bool _isQuotaExceededError(Object error) {
-    final errorString = error.toString().toLowerCase();
-    return errorString.contains('quota') ||
-        errorString.contains('quotaexceedederror') ||
-        errorString.contains('exceeded') && errorString.contains('storage');
-  }
-
-  /// Handles quota exceeded errors by attempting to free up space.
+  /// Frees space after a quota error. Removes the least recently used
+  /// entries together with their file contents (stored in the same database
+  /// by `IndexedDbFileSystem` when it uses this [databaseName], the default).
   Future<void> _handleQuotaExceeded() async {
-    cacheLogger.log(
-      'CacheManager: Quota exceeded, attempting to free up space',
-      CacheManagerLogLevel.warning,
-    );
-
     try {
-      // Get the oldest 10% of objects and delete them
-      final allObjects = await getAllObjects();
-      if (allObjects.isEmpty) {
-        return;
-      }
-
-      allObjects.sort((a, b) => a.touched!.compareTo(b.touched!));
-      final toRemoveCount = (allObjects.length * 0.1).ceil().clamp(1, 50);
-      final toRemove = allObjects
-          .take(toRemoveCount)
-          .map((e) => e.id!)
-          .toList();
-
-      await deleteAll(toRemove);
-
-      cacheLogger.log(
-        'CacheManager: Freed up space by removing $toRemoveCount old cache entries',
-        CacheManagerLogLevel.verbose,
-      );
+      await evictLeastRecentlyUsed(await _getDatabase());
     } catch (e) {
       cacheLogger.log(
         'CacheManager: Failed to free up space: $e',
@@ -238,7 +130,7 @@ class IndexedDbCacheInfoRepository extends CacheInfoRepository
     try {
       return await _insertWithRetry(cacheObject, setTouchedToNow, retries: 1);
     } catch (e) {
-      if (_isQuotaExceededError(e)) {
+      if (isQuotaExceeded(e)) {
         cacheLogger.log(
           'CacheManager: Insert failed due to quota exceeded',
           CacheManagerLogLevel.warning,
@@ -271,15 +163,19 @@ class IndexedDbCacheInfoRepository extends CacheInfoRepository
     }.toJS;
 
     request.onerror = (web.Event e) {
+      e.preventDefault();
       completer.completeError(
-        Exception('Failed to insert object into IndexedDB: ${request.error}'),
+        IndexedDbException(
+          'Failed to insert object into IndexedDB',
+          request.error,
+        ),
       );
     }.toJS;
 
     try {
       return await completer.future;
     } catch (e) {
-      if (_isQuotaExceededError(e) && retries > 0) {
+      if (isQuotaExceeded(e) && retries > 0) {
         // Try to free up space and retry once
         await _handleQuotaExceeded();
         return await _insertWithRetry(
@@ -315,8 +211,12 @@ class IndexedDbCacheInfoRepository extends CacheInfoRepository
     }.toJS;
 
     request.onerror = (web.Event e) {
+      e.preventDefault();
       completer.completeError(
-        Exception('Failed to update object in IndexedDB: ${request.error}'),
+        IndexedDbException(
+          'Failed to update object in IndexedDB',
+          request.error,
+        ),
       );
     }.toJS;
 
@@ -536,9 +436,9 @@ class IndexedDbCacheInfoRepository extends CacheInfoRepository
     if (!shouldClose()) {
       return false;
     }
-    // Note: We don't close the connection pool here as it may be shared
-    // The pool will handle cleanup automatically or can be closed explicitly
-    // on app shutdown via IndexedDbConnectionPool.closeAll()
+    // Releases the connection taken in open(); it closes once no other
+    // repository for this database holds it.
+    _connectionPool.release();
     return true;
   }
 
@@ -546,7 +446,7 @@ class IndexedDbCacheInfoRepository extends CacheInfoRepository
   Future<void> deleteDataFile() async {
     await close();
 
-    // Close the connection pool before deleting the database
+    // Close the shared connection, or it would block the deletion.
     IndexedDbConnectionPool.removeInstance(databaseName);
 
     final completer = Completer<void>();
@@ -558,13 +458,22 @@ class IndexedDbCacheInfoRepository extends CacheInfoRepository
 
     request.onerror = (web.Event e) {
       completer.completeError(
-        Exception('Failed to delete IndexedDB database: ${request.error}'),
+        IndexedDbException(
+          'Failed to delete IndexedDB database',
+          request.error,
+        ),
       );
     }.toJS;
 
+    // A connection in another tab is still open. Those close on
+    // `versionchange`, after which the deletion goes ahead and onsuccess
+    // fires; until then, report why it is waiting.
     request.onblocked = (web.Event e) {
-      // Database deletion is blocked by open connections
-      // This shouldn't happen as we closed the connection above
+      cacheLogger.log(
+        'CacheManager: deleting IndexedDB database $databaseName is blocked by '
+        'a connection in another tab; waiting for it to close',
+        CacheManagerLogLevel.warning,
+      );
     }.toJS;
 
     return completer.future;
