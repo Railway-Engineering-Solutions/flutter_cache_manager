@@ -22,15 +22,16 @@ class FileServiceCompat extends FileService {
     if (cancellationToken?.isCancelled ?? false) {
       throw CancelledException();
     }
-    return CompatFileServiceGetResponse(legacyResponse);
+    return CompatFileServiceGetResponse(legacyResponse, Uri.tryParse(url));
   }
 }
 
 class CompatFileServiceGetResponse implements FileServiceResponse {
   final FileFetcherResponse legacyResponse;
+  final Uri? _uri;
   final DateTime _receivedTime = clock.now();
 
-  CompatFileServiceGetResponse(this.legacyResponse);
+  CompatFileServiceGetResponse(this.legacyResponse, [this._uri]);
 
   String? _header(String name) {
     return legacyResponse.header(name);
@@ -71,15 +72,10 @@ class CompatFileServiceGetResponse implements FileServiceResponse {
   String? get eTag => _header(HttpHeaders.etagHeader);
 
   @override
-  String get fileExtension {
-    var fileExtension = '';
-    final contentTypeHeader = _header(HttpHeaders.contentTypeHeader);
-    if (contentTypeHeader != null) {
-      final contentType = ContentType.parse(contentTypeHeader);
-      fileExtension = contentType.fileExtension;
-    }
-    return fileExtension;
-  }
+  String get fileExtension => fileExtensionFromContentTypeOrUri(
+    _header(HttpHeaders.contentTypeHeader),
+    _uri,
+  );
 
   @override
   int get statusCode => legacyResponse.statusCode as int;
