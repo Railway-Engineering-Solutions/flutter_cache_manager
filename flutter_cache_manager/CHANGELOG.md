@@ -1,10 +1,8 @@
-## [3.5.2] - 2026-11-13
+## [3.6.0] - 2026-11-13
 
-* Merge upstream 3.5.0 (content-based resizable image detection, URL extension fallback, cleanup and cache-hit metadata fixes), retaining request cancellation and the buffered IndexedDB web persistence.
-
-## [3.5.1] - 2026-10-21
-
-* Merge upstream 3.4.5 persistence and decoding fixes, retaining cancellation.
+* **Web:** files and cache info now persist in IndexedDB instead of memory, so the cache survives reloads. Files are written and read in chunks, and the least recently used entries are evicted when the storage quota is reached. Pass `MemoryCacheSystem` and `NonStoringObjectProvider` to `Config` to keep the in-memory behaviour.
+* Adds `CancellationToken` to `getFileStream`, `getSingleFile`, `downloadFile` and `ImageCacheManager.getImageFile`. Cancellation applies per caller: a shared download stops only once every caller has cancelled. A cancelled or failed download deletes its partial file, and the previously cached file stays valid. `FileService.get` and `BaseCacheManager` keep their signatures; a custom `FileService` can read `CancellationToken.current`.
+* Closes the download sink when the response stream errors.
 
 ## [3.5.0] - 2026-11-04
 
@@ -36,16 +34,6 @@
 * Awaits cache-info persist in `putFile`, `putFileStream`, and downloads so the stored object has an id before those calls return ([#492](https://github.com/Baseflow/flutter_cache_manager/issues/492)). A failed repository write now throws from `putFile`/`putFileStream` and errors the download stream instead of returning a usable file with no cache-info row.
 
 ## [3.4.3] - 2026-09-15
-
-### Fork (Railway-Engineering-Solutions)
-
-* Adds IndexedDB-backed cache info repository and file system for web, replacing the
-  non-persistent `NonStoringObjectProvider` / `MemoryCacheSystem` defaults
-* Syncs with Baseflow upstream `develop` (through 3.4.2 + unreleased changes)
-* Raises dependency floors: `clock` 1.1.3, `path_provider` 2.1.6, `sqflite` 2.4.3,
-  `build_runner` 2.16.1, `mockito` 5.8.1, `web` 1.1.1
-
-### Upstream
 
 * Fixes `JsonCacheInfoRepository` losing metadata when the app exits within 3 seconds of a cache change by writing through promptly with serialized, atomic file writes ([#491](https://github.com/Baseflow/flutter_cache_manager/issues/491))
 * Modernizes GitHub Actions CI (combined quality job, pinned Flutter 3.47.4, Dependabot for actions)
