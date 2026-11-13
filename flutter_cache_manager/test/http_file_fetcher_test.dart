@@ -442,7 +442,7 @@ void main() {
         final httpFileFetcher = HttpFileService(httpClient: client);
 
         expect(
-          () => httpFileFetcher.get('test.com/image', cancellationToken: token),
+          () => token.runScoped(() => httpFileFetcher.get('test.com/image')),
           throwsA(isA<CancelledException>()),
         );
       },
@@ -460,9 +460,8 @@ void main() {
         final httpFileFetcher = HttpFileService(httpClient: client);
 
         // Complete the request first
-        final response = await httpFileFetcher.get(
-          'http://test.com/image',
-          cancellationToken: token,
+        final response = await token.runScoped(
+          () => httpFileFetcher.get('http://test.com/image'),
         );
 
         // Cancelling after response is received has no effect

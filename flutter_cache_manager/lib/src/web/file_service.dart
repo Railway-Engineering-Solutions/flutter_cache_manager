@@ -9,10 +9,31 @@ import 'package:http/http.dart' as http;
 ///Copyright (c) 2019 Rene Floor
 ///Released under MIT License.
 
-/// Token that can be used to cancel an in-flight request.
+/// Token that cancels a request made through a cache manager.
+///
+/// Pass it to [CacheManager.getFileStream], [CacheManager.getSingleFile],
+/// [CacheManager.downloadFile] or `ImageCacheManager.getImageFile`.
+/// Cancellation applies to that caller only: the caller's stream ends with a
+/// [CancelledException], and a download shared with other callers keeps
+/// running until every caller has cancelled.
+///
+/// While a download runs, the token that stops it is available to the
+/// [FileService] as [CancellationToken.current], so a service can abort its
+/// request without any change to [FileService.get]'s signature.
 class CancellationToken {
   bool _isCancelled = false;
   Completer<void>? _completer;
+
+  static final Object _zoneKey = Object();
+
+  /// The token of the download the current [FileService.get] call belongs to,
+  /// or null when the request cannot be cancelled.
+  static CancellationToken? get current =>
+      Zone.current[_zoneKey] as CancellationToken?;
+
+  /// Runs [body] with this token as [current].
+  R runScoped<R>(R Function() body) =>
+      runZoned(body, zoneValues: {_zoneKey: this});
 
   /// Whether this token has been cancelled.
   bool get isCancelled => _isCancelled;
@@ -36,6 +57,11 @@ class CancellationToken {
     }
     return _completer!.future;
   }
+
+  /// Throws a [CancelledException] when this token has been cancelled.
+  void throwIfCancelled() {
+    if (_isCancelled) throw CancelledException();
+  }
 }
 
 /// Exception thrown when a request is cancelled.
@@ -57,11 +83,12 @@ class CancelledException implements Exception {
 abstract class FileService {
   int concurrentFetches = 10;
 
-  Future<FileServiceResponse> get(
-    String url, {
-    Map<String, String>? headers,
-    CancellationToken? cancellationToken,
-  });
+  /// Fetches [url], sending [headers] with the request.
+  ///
+  /// When the download is cancelled by all of its callers,
+  /// [CancellationToken.current] is cancelled; implementations may use it to
+  /// abort the request. Ignoring it is safe: the response is then discarded.
+  Future<FileServiceResponse> get(String url, {Map<String, String>? headers});
 }
 
 /// [HttpFileService] is the most common file service and the default for
@@ -76,8 +103,8 @@ class HttpFileService extends FileService {
   Future<FileServiceResponse> get(
     String url, {
     Map<String, String>? headers,
-    CancellationToken? cancellationToken,
   }) async {
+    final cancellationToken = CancellationToken.current;
     if (cancellationToken?.isCancelled ?? false) {
       throw CancelledException();
     }

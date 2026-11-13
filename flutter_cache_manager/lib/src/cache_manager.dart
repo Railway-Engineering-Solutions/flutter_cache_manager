@@ -65,6 +65,8 @@ class CacheManager implements BaseCacheManager {
   /// When a file is cached and up to date it is return directly, when the cached
   /// file is too old the file is downloaded and returned after download.
   /// When a cached file is not available the newly downloaded file is returned.
+  /// A cancelled [cancellationToken] ends this call with a [CancelledException]
+  /// (see [CancellationToken]).
   @override
   Future<File> getSingleFile(
     String url, {
@@ -73,6 +75,7 @@ class CacheManager implements BaseCacheManager {
     CancellationToken? cancellationToken,
   }) async {
     key ??= url;
+    cancellationToken ??= CancellationToken.current;
     final cacheFile = await getFileFromCache(key);
     if (cacheFile != null && cacheFile.validTill.isAfter(DateTime.now())) {
       return cacheFile.file;
@@ -125,6 +128,9 @@ class CacheManager implements BaseCacheManager {
     CancellationToken? cancellationToken,
   }) {
     key ??= url;
+    // Callers that only see BaseCacheManager (such as ImageCacheManager) pass
+    // their token through CancellationToken.runScoped.
+    cancellationToken ??= CancellationToken.current;
     final streamController = StreamController<FileResponse>();
     _pushFileToStream(
       streamController,
@@ -206,6 +212,7 @@ class CacheManager implements BaseCacheManager {
     CancellationToken? cancellationToken,
   }) async {
     key ??= url;
+    cancellationToken ??= CancellationToken.current;
     final fileResponse = await _webHelper
         .downloadFile(
           url,

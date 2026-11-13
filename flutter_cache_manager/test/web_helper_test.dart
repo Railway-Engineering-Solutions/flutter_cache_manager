@@ -298,13 +298,9 @@ void main() {
       when(store.putFile(any)).thenAnswer((_) => persisted.future);
 
       final fileService = MockFileService();
-      when(
-        fileService.get(
-          imageUrl,
-          headers: anyNamed('headers'),
-          cancellationToken: anyNamed('cancellationToken'),
-        ),
-      ).thenAnswer((_) {
+      when(fileService.get(imageUrl, headers: anyNamed('headers'))).thenAnswer((
+        _,
+      ) {
         return Future.value(
           MockFileFetcherResponse(
             Stream.value([0, 1, 2, 3, 4, 5]),

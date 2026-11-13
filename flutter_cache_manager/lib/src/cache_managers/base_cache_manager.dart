@@ -3,7 +3,6 @@ import 'dart:typed_data';
 import 'package:file/file.dart';
 import 'package:flutter_cache_manager/src/result/file_info.dart';
 import 'package:flutter_cache_manager/src/result/file_response.dart';
-import 'package:flutter_cache_manager/src/web/file_service.dart';
 
 /// Interface of the CacheManager. In general [CacheManager] can be used
 /// directly.
@@ -15,9 +14,8 @@ abstract class BaseCacheManager {
   /// newly downloaded file is returned.
   Future<File> getSingleFile(
     String url, {
-    String? key,
-    Map<String, String>? headers,
-    CancellationToken? cancellationToken,
+    String key,
+    Map<String, String> headers,
   });
 
   /// Get the file from the cache and/or online, depending on availability and age.
@@ -27,9 +25,8 @@ abstract class BaseCacheManager {
   @Deprecated('Prefer to use the new getFileStream method')
   Stream<FileInfo> getFile(
     String url, {
-    String? key,
-    Map<String, String>? headers,
-    CancellationToken? cancellationToken,
+    String key,
+    Map<String, String> headers,
   });
 
   /// Get the file from the cache and/or online, depending on availability and age.
@@ -47,8 +44,7 @@ abstract class BaseCacheManager {
     String url, {
     String? key,
     Map<String, String>? headers,
-    bool withProgress = false,
-    CancellationToken? cancellationToken,
+    bool withProgress,
   });
 
   ///Download the file and add to cache
@@ -57,7 +53,6 @@ abstract class BaseCacheManager {
     String? key,
     Map<String, String>? authHeaders,
     bool force = false,
-    CancellationToken? cancellationToken,
   });
 
   /// Get the file from the cache.
